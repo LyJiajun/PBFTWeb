@@ -13,12 +13,13 @@
 import { ref, computed, onMounted, watch } from "vue";
 
 export default {
-  props: ["topologyType", "nodeCount", "byzantineNodes", "simulationResult"],
+  props: ["topologyType", "nodeCount", "byzantineNodes", "simulationResult", "animationSpeed"],
   setup(props) {
     const canvas = ref(null);
     const ctx = ref(null);
     const nodeRadius = 20;
     const finalConsensus = ref("");
+    const currentAnimationFrame = ref(null);  // 添加当前动画帧的引用
 
     // 使用 computed 缓存节点位置，只有 props.nodeCount 改变时才重新计算
     const nodePositions = computed(() => {
@@ -99,69 +100,130 @@ export default {
       drawNodes();
     };
 
-    // 单个阶段内所有消息动画同时播放的处理函数
     const animatePhase = (messages, doneCallback) => {
-      const animations = messages
-        .filter((msg) => msg.dst !== null)
-        .map((msg) => {
-          return {
-            msg,
-            start: nodePositions.value[msg.src],
-            end: nodePositions.value[msg.dst],
-            frame: 0,
-            steps: 100 // 动画步数设为 100，降低动画速度
-          };
+      let completed = 0;
+      const total = messages.length;
+      const animations = [];
+      const processedIds = new Set();
+
+      // 计算基础动画步数
+      const baseSteps = 83;
+      const speedFactor = parseFloat(props.animationSpeed || "1.0");
+      const baseAdjustedSteps = Math.round(baseSteps / speedFactor);
+
+      // 为每个消息创建动画
+      messages.forEach(msg => {
+        if (!msg.path || !msg.path.nodes || msg.path.nodes.length === 0) return;
+        
+        // 为每个消息生成一个随机速度增益 (0.8 到 1.6 之间)
+        const randomSpeedFactor = 0.8 + Math.random() * 0.8;
+        const adjustedSteps = Math.round(baseAdjustedSteps / randomSpeedFactor);
+        
+        animations.push({
+          msg: msg,
+          path: msg.path.nodes,
+          probs: msg.path.probabilities,
+          currentSegment: 0,
+          frame: 0,
+          steps: adjustedSteps,
+          src: msg.src,
+          dst: msg.dst,
+          isComplete: false,
+          id: `${msg.src}-${msg.dst}-${msg.value}-${msg.tampered}`
         });
+      });
 
       const animateStep = () => {
+        // 如果动画被取消，直接返回
+        if (!currentAnimationFrame.value) return;
+
         ctx.value.clearRect(0, 0, 600, 600);
         drawTopology();
+
         let stillAnimating = false;
-        animations.forEach((anim) => {
-          if (anim.frame < anim.steps) {
-            stillAnimating = true;
-            const progress = anim.frame / anim.steps;
-            const x = anim.start.x + (anim.end.x - anim.start.x) * progress;
-            const y = anim.start.y + (anim.end.y - anim.start.y) * progress;
-            // 根据消息的 value 决定移动圆点的颜色：
-            // 当 value 为 0（数字或字符串均可）时使用绿色；当 value 为 "none" 时使用红色
-            const dotColor =
-              anim.msg.value === 0 || anim.msg.value === "0"
-                ? "green"
-                : anim.msg.value === "none"
-                ? "red"
-                : "red";
-            ctx.value.beginPath();
-            ctx.value.arc(x, y, 10, 0, Math.PI * 2);
-            ctx.value.fillStyle = dotColor;
-            ctx.value.fill();
-            anim.frame++;
+        animations.forEach(anim => {
+          if (!anim.isComplete) {
+            if (anim.currentSegment < anim.path.length - 1) {
+              stillAnimating = true;
+              const start = nodePositions.value[anim.path[anim.currentSegment]];
+              const end = nodePositions.value[anim.path[anim.currentSegment + 1]];
+              const progress = anim.frame / anim.steps;
+
+              const x = start.x + (end.x - start.x) * progress;
+              const y = start.y + (end.y - start.y) * progress;
+
+              ctx.value.beginPath();
+              ctx.value.arc(x, y, 8, 0, Math.PI * 2);
+              ctx.value.fillStyle = anim.msg.value === 0 ? "green" : "red";
+              ctx.value.fill();
+              ctx.value.strokeStyle = "white";
+              ctx.value.lineWidth = 2;
+              ctx.value.stroke();
+
+              ctx.value.fillStyle = "black";
+              ctx.value.font = "12px Arial";
+              const infoText = `${anim.src}→${anim.dst}`;
+              ctx.value.fillText(infoText, x + 15, y + 5);
+
+              const probText = `P=${anim.probs[anim.currentSegment].toFixed(2)}`;
+              ctx.value.fillText(probText, x + 10, y - 10);
+
+              anim.frame++;
+              if (anim.frame >= anim.steps) {
+                anim.frame = 0;
+                anim.currentSegment++;
+              }
+            } else {
+              anim.isComplete = true;
+              stillAnimating = true;
+            }
           }
         });
+
         if (stillAnimating) {
-          requestAnimationFrame(animateStep);
+          currentAnimationFrame.value = requestAnimationFrame(animateStep);
         } else {
-          if (doneCallback) doneCallback();
+          completed = total;
+          if (completed === total && doneCallback) {
+            doneCallback();
+          }
         }
       };
-      animateStep();
+
+      currentAnimationFrame.value = requestAnimationFrame(animateStep);
     };
 
     const startAnimation = () => {
+      // 取消之前的动画
+      if (currentAnimationFrame.value) {
+        cancelAnimationFrame(currentAnimationFrame.value);
+        currentAnimationFrame.value = null;
+      }
+
       const simulationResult = props.simulationResult;
       if (!simulationResult) return;
 
       const prePrepareMessages = simulationResult.pre_prepare;
-      const prepareMessages = simulationResult.prepare.flat();
+      const prepareMessages = simulationResult.prepare
+        .flat()
+        .filter(msg => msg.src !== 0);
       const commitMessages = simulationResult.commit.flat();
 
+      const speedFactor = parseFloat(props.animationSpeed || "1.0");
+      const pauseDuration = Math.round(800 / speedFactor);
+
       animatePhase(prePrepareMessages, () => {
-        animatePhase(prepareMessages, () => {
-          animatePhase(commitMessages, () => {
-            finalConsensus.value =
-              simulationResult.consensus || "共识结果已达成";
+        setTimeout(() => {
+          animatePhase(prepareMessages, () => {
+            setTimeout(() => {
+              animatePhase(commitMessages, () => {
+                setTimeout(() => {
+                  finalConsensus.value = simulationResult.consensus || "共识结果已达成";
+                }, pauseDuration);
+              });
+            }, pauseDuration);
           });
-        });
+        }, pauseDuration);
       });
     };
 
@@ -176,6 +238,22 @@ export default {
         if (newResult) {
           startAnimation();
         }
+      }
+    );
+
+    // 添加对拓扑结构变化的监听
+    watch(
+      [() => props.topologyType, () => props.nodeCount, () => props.byzantineNodes],
+      () => {
+        // 取消当前动画
+        if (currentAnimationFrame.value) {
+          cancelAnimationFrame(currentAnimationFrame.value);
+          currentAnimationFrame.value = null;
+        }
+        // 清空共识结果
+        finalConsensus.value = "";
+        // 重新绘制拓扑
+        drawTopology();
       }
     );
 

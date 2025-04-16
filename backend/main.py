@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from fastapi.middleware.cors import CORSMiddleware
 import random
 import math
@@ -26,21 +26,28 @@ class SimulationParameters(BaseModel):
     n_value: Optional[int] = 2       # 针对树型拓扑的分支数（当 topology=="tree" 时有效）
     faulty_proposer: bool = False    # 是否由故障（恶意）提议者发起（对应 JS 中 maliciousOrigin）
     allow_tampering: bool = False     # 是否允许消息篡改（对应 JS 中 falsehoodMessage）
+    message_delivery_prob: float = 1.0  # 消息到达的概率，默认为1.0（100%）
     probability_matrix: Optional[List[List[float]]] = None  
     # 若为空，则后端根据拓扑自动生成默认的概率矩阵（允许的连接概率为 1）
 
+class MessagePath(BaseModel):
+    nodes: List[int]  # 消息传递经过的节点路径
+    success: bool     # 消息是否成功传递
+    probabilities: List[float]  # 每个路径段的传递概率
+
 class Message(BaseModel):
     src: int
-    dst: Optional[int]  # 对于预准备阶段，proposer 给所有节点发消息时，dst 可为空（None）表示“自发”
+    dst: Optional[int]  # 对于预准备阶段，proposer 给所有节点发消息时，dst 可为空（None）表示"自发"
     value: Optional[int]
     tampered: bool
+    path: Optional[MessagePath] = None  # 消息传递的路径信息
 
 class SimulationResult(BaseModel):
     pre_prepare: List[Message]
     prepare: List[List[Message]]       # 每个节点发出的准备消息列表
     commit: List[List[Message]]        # 每个节点收到的提交消息列表
-    accepted_in_prepare: List[Optional[int]]  # 每个节点在准备阶段的“接受值”
-    accepted_in_commit: List[Optional[int]]   # 每个节点在提交阶段的“接受值”
+    accepted_in_prepare: List[Optional[int]]  # 每个节点在准备阶段的"接受值"
+    accepted_in_commit: List[Optional[int]]   # 每个节点在提交阶段的"接受值"
     consensus: str                     # 最终共识结果说明
     probability_matrix: List[List[float]]  # 模拟中使用的概率矩阵，可供前端显示或调试
 
@@ -49,34 +56,99 @@ class SimulationResult(BaseModel):
 # ----------------------------
 
 def is_connection_allowed(i: int, j: int, n: int, topology: str, n_value: int) -> bool:
+    """
+    根据拓扑类型判断节点 i 到节点 j 是否允许通信。
+    i==j 的情况一律返回 False。
+    """
     if i == j:
         return False
+    
     if topology == "full":
         return True
     elif topology == "ring":
-        return j == (i + 1) % n or j == (i - 1) % n  # 现在严格按环状连接
+        # 在环形拓扑中，允许双向连接
+        return j == (i + 1) % n or j == (i - 1) % n
     elif topology == "star":
+        # 星型拓扑中，以 0 号为中心，其它节点与 0 相连
+        # 允许中心节点与其他所有节点通信，但不允许非中心节点之间直接通信
         return i == 0 or j == 0
     elif topology == "tree":
-        parent = (j - 1) // n_value  # 计算 j 的父节点
-        return i == parent and j < n  # 现在严格保证树状拓扑
+        # 树型拓扑中，每个节点可以与其父节点和子节点通信
+        # 父节点编号为 (i-1)//n_value
+        # 子节点编号为 i*n_value+1 到 i*n_value+n_value
+        parent = (i - 1) // n_value
+        children = [i * n_value + k for k in range(1, n_value + 1) if i * n_value + k < n]
+        return j == parent or j in children
     return False
 
-def generate_probability_matrix(n: int, topology: str, n_value: int) -> List[List[float]]:
+def generate_probability_matrix(n: int, topology: str, n_value: int, message_delivery_prob: float = 1.0) -> List[List[float]]:
+    """
+    生成一个 n×n 的概率矩阵，对允许通信的边赋指定的概率（默认为1.0）。
+    对于星型拓扑，中心节点（0号）到其他节点的概率可能更高。
+    对于树型拓扑，父子节点之间的概率可能更高。
+    """
     matrix = [[0.0 for _ in range(n)] for _ in range(n)]
-    for i in range(n):
-        for j in range(n):
-            if is_connection_allowed(i, j, n, topology, n_value):
-                matrix[i][j] = 1.0
+    
+    if topology == "star":
+        # 星型拓扑中，中心节点到其他节点的概率可能更高
+        for i in range(n):
+            if i == 0:  # 中心节点
+                for j in range(1, n):
+                    matrix[i][j] = message_delivery_prob
+            else:  # 其他节点只能与中心节点通信
+                matrix[i][0] = message_delivery_prob
+    elif topology == "tree":
+        # 树型拓扑中，父子节点之间的概率可能更高
+        for i in range(n):
+            parent = (i - 1) // n_value
+            children = [i * n_value + k for k in range(1, n_value + 1) if i * n_value + k < n]
+            if parent >= 0:
+                matrix[i][parent] = message_delivery_prob
+                matrix[parent][i] = message_delivery_prob
+            for child in children:
+                matrix[i][child] = message_delivery_prob
+                matrix[child][i] = message_delivery_prob
+    else:
+        # 其他拓扑结构（全连接、环形）使用统一的概率
+        for i in range(n):
+            for j in range(n):
+                if is_connection_allowed(i, j, n, topology, n_value):
+                    matrix[i][j] = message_delivery_prob
+    
     return matrix
 
-def is_message_delivered(prob_matrix: List[List[float]], src: int, dst: int, topology: str, n_value: int) -> bool:
-    """ 判断从 src 到 dst 的消息是否能成功传输 """
-    if not is_connection_allowed(src, dst, len(prob_matrix), topology, n_value):
-        return False  # 如果拓扑结构不允许，则直接返回 False
-
-    transmission_probability = prob_matrix[src][dst]  # 获取传输概率
-    return random.random() <= transmission_probability  # 按概率决定是否传输成功
+def is_message_delivered(prob_matrix: List[List[float]], src: int, dst: int, topology: str, n_value: int) -> Tuple[bool, List[int], List[float]]:
+    """
+    判断从 src 到 dst 的消息是否能成功传输，并返回传递路径和概率。
+    支持消息转发，即消息可以通过中间节点传递。
+    """
+    if src == dst:
+        return True, [src], [1.0]
+    
+    n = len(prob_matrix)
+    visited = [False] * n
+    # (当前节点, 路径, 累积概率, 路径概率列表)
+    queue = [(src, [src], 1.0, [])]
+    
+    while queue:
+        node, path, current_prob, probs = queue.pop(0)
+        if node == dst:
+            # 如果找到目标节点，根据累积概率判断是否成功传递
+            success = random.random() <= current_prob
+            return success, path, probs
+        
+        visited[node] = True
+        for i in range(n):
+            if not visited[i] and is_connection_allowed(node, i, n, topology, n_value):
+                # 计算新的累积概率
+                new_prob = current_prob * prob_matrix[node][i]
+                # 如果累积概率太小，可以提前终止
+                if new_prob > 0.01:  # 设置一个阈值，避免概率太小的情况
+                    new_path = path + [i]
+                    new_probs = probs + [prob_matrix[node][i]]
+                    queue.append((i, new_path, new_prob, new_probs))
+    
+    return False, [], []
 
 def is_honest(i: int, n: int, m: int, faulty_proposer: bool) -> bool:
     if m == 0:
@@ -96,57 +168,65 @@ def is_honest(i: int, n: int, m: int, faulty_proposer: bool) -> bool:
 
 @app.post("/simulate", response_model=SimulationResult)
 def simulate(params: SimulationParameters):
-    print("Received parameters:", params.model_dump())
     n = params.n
     m = params.m
     topology = params.topology
     n_value = params.n_value if params.n_value is not None else 2
     faulty_proposer = params.faulty_proposer
     allow_tampering = params.allow_tampering
+    message_delivery_prob = params.message_delivery_prob
 
-
-
+    # 若前端未传入概率矩阵，则自动根据拓扑生成默认矩阵
     if params.probability_matrix is not None:
         prob_matrix = params.probability_matrix
     else:
-        prob_matrix = generate_probability_matrix(n, topology, n_value)
+        prob_matrix = generate_probability_matrix(n, topology, n_value, message_delivery_prob)
 
     # ----------- 预准备阶段（Pre-Prepare）-----------
     pre_prepare = []
     for i in range(n):
-        if i == 0 or is_message_delivered(prob_matrix, 0, i, topology, n_value):
-            if is_honest(0, n, m, faulty_proposer):
-                value = 0
-            else:
-                value = random.choice([0, 1])
-            tampered = not is_honest(0, n, m, faulty_proposer)
-            dst = None if i == 0 else i
+        if i == 0:
+            # 对于提议者自身
+            msg = Message(
+                src=0,
+                dst=None,
+                value=0 if is_honest(0, n, m, faulty_proposer) else random.choice([0, 1]),
+                tampered=not is_honest(0, n, m, faulty_proposer),
+                path=MessagePath(nodes=[0], success=True, probabilities=[1.0])
+            )
         else:
-            value = None
-            tampered = False
-            dst = i
-        
-        msg = Message(src=0, dst=dst, value=value, tampered=tampered)
+            # 对于其他节点
+            success, path, probs = is_message_delivered(prob_matrix, 0, i, topology, n_value)
+            msg = Message(
+                src=0,
+                dst=i,
+                value=0 if is_honest(0, n, m, faulty_proposer) else random.choice([0, 1]),
+                tampered=not is_honest(0, n, m, faulty_proposer),
+                path=MessagePath(nodes=path, success=success, probabilities=probs)
+            )
         pre_prepare.append(msg)
 
     # ----------- 准备阶段（Prepare）-----------
     prepare = []
     for src in range(n):
-        # 修改部分：如果发送者是主节点（节点 0），则不发送准备消息
-        if src == 0:
-            prepare.append([])
-            continue
         msgs = []
         for dst in range(n):
             if src == dst:
                 continue
-            if is_message_delivered(prob_matrix, src, dst, topology, n_value):
+            success, path, probs = is_message_delivered(prob_matrix, src, dst, topology, n_value)
+            if success:
                 if is_honest(src, n, m, faulty_proposer):
                     value = pre_prepare[src].value
                 else:
                     value = random.choice([0, 1]) if allow_tampering else None
                 tampered = (value != pre_prepare[src].value) if pre_prepare[src].value is not None else False
-                msg = Message(src=src, dst=dst, value=value, tampered=tampered)
+                msg = Message(
+                    src=src,
+                    dst=dst,
+                    value=value,
+                    tampered=tampered,
+                    path=MessagePath(nodes=path, success=success, probabilities=probs)
+                )
                 msgs.append(msg)
         prepare.append(msgs)
 
@@ -175,13 +255,20 @@ def simulate(params: SimulationParameters):
         for src in range(n):
             if src == dst:
                 continue
-            if is_message_delivered(prob_matrix, src, dst, topology, n_value):
+            success, path, probs = is_message_delivered(prob_matrix, src, dst, topology, n_value)
+            if success:
                 if is_honest(src, n, m, faulty_proposer) or not allow_tampering:
                     value = accepted_in_prepare[src]
                 else:
                     value = random.choice([0, 1])
                 tampered = not is_honest(src, n, m, faulty_proposer)
-                msg = Message(src=src, dst=dst, value=value, tampered=tampered)
+                msg = Message(
+                    src=src,
+                    dst=dst,
+                    value=value,
+                    tampered=tampered,
+                    path=MessagePath(nodes=path, success=success, probabilities=probs)
+                )
                 commit[dst].append(msg)
 
     def accepted_value_in_commit(i: int) -> Optional[int]:

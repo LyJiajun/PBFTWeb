@@ -13,6 +13,7 @@
         :nodeCount="nodeCount"
         :byzantineNodes="byzantineNodes"
         :simulationResult="filteredSimulationResult"
+        :animationSpeed="animationSpeed"
       />
     </div>
 
@@ -38,6 +39,7 @@ export default {
     const nodeCount = ref(6);
     const byzantineNodes = ref(1);
     const simulationResult = ref(null);
+    const animationSpeed = ref("1.0");
 
     // 过滤后端返回的数据
     const filteredSimulationResult = computed(() => {
@@ -54,6 +56,7 @@ export default {
       topologyType.value = formData.topologyType;
       nodeCount.value = formData.nodeCount;
       byzantineNodes.value = formData.byzantineNodes;
+      animationSpeed.value = formData.animationSpeed;
 
       const requestData = {
         n: formData.nodeCount,
@@ -62,9 +65,10 @@ export default {
         n_value: 2,
         faulty_proposers: false,
         allow_tampering: false,
+        message_delivery_prob: formData.messageDeliveryProb,
       };
 
-      console.log("Request Payload to Backend:", requestData); // 打印发送给后端的数据
+      console.log("Request Payload to Backend:", requestData);
 
       console.log("当前打包时间:2024-03-10 18.17,接口路径已改 /api/simulate");
       try {
@@ -87,6 +91,7 @@ export default {
       byzantineNodes,
       simulationResult,
       filteredSimulationResult,
+      animationSpeed,
       updateTopology,
     };
   },
@@ -99,9 +104,11 @@ export default {
 /* 父容器：使用 Flexbox 布局，填满整个浏览器 */
 .app-container {
   display: flex;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 /* 左侧侧边栏：固定宽度，背景色深色，内容贴边 */
@@ -112,6 +119,7 @@ export default {
   box-sizing: border-box;
   overflow-y: auto;
   padding: 20px;
+  height: 100%;
 }
 
 /* 中间区域：拓扑图区域，占据剩余空间 */
@@ -123,6 +131,7 @@ export default {
   padding: 0;
   text-align: center;
   border-right: 1px solid #ccc;
+  height: 100%;
 }
 
 /* 右侧侧边栏：固定宽度，背景色浅色，内容贴边 */
@@ -132,5 +141,6 @@ export default {
   box-sizing: border-box;
   overflow-y: auto;
   padding: 0;
+  height: 100%;
 }
 </style>
