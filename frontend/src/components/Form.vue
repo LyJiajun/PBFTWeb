@@ -78,7 +78,7 @@ export default {
     });
 
     const maxByzantineNodes = computed(() => {
-      return Math.floor((formData.value.nodeCount - 1) / 3);
+      return formData.value.nodeCount - 1;
     });
 
     const handleSubmit = () => {

@@ -82,6 +82,9 @@ export default {
       if (stage === "pre_prepare") {
         msgs = props.filteredSimulationResult.pre_prepare || [];
       } else if (stage === "prepare") {
+        if (nodeIndex === 0) {
+          return [];
+        }
         msgs = (props.filteredSimulationResult.prepare || []).flat() || [];
       } else if (stage === "commit") {
         msgs = (props.filteredSimulationResult.commit || []).flat() || [];
@@ -95,7 +98,7 @@ export default {
     };
 
     const referenceValue = computed(() => {
-      const firstMatch = props.filteredSimulationResult?.messages?.find(msg => msg.dst === null);
+      const firstMatch = props.filteredSimulationResult?.pre_prepare?.find(msg => msg.dst === null);
       return firstMatch ? firstMatch.value : 0;
     });
 
@@ -129,38 +132,71 @@ export default {
   width: 600px;
   margin: 0 auto;
 }
+
+h2 {
+  margin-bottom: 20px;
+  text-align: center;
+  color: #333;
+  font-size: 24px;
+}
+
 .pbft-table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 10px;
   font-size: 14px;
+  background-color: #fce4ec;  /* 更浅的粉色背景 */
 }
+
 .msg-line {
   white-space: nowrap;
 }
-.pbft-table th,
-.pbft-table td {
-  border: 1px solid #ccc;
-  padding: 6px 8px;
-  text-align: left;
-}
-.consensus-result {
-  margin-top: 10px;
+
+.pbft-table th {
+  background-color: #f48fb1;  /* 中等粉色背景 */
+  color: #333;
   font-weight: bold;
   text-align: center;
+  padding: 12px 8px;
+  border: 1px solid #e91e63;  /* 深粉色边框 */
 }
+
+.pbft-table td {
+  border: 1px solid #f48fb1;  /* 中等粉色边框 */
+  padding: 8px;
+  text-align: left;
+  background-color: #fff1f4;  /* 非常浅的粉色背景 */
+  color: #333;
+}
+
+.consensus-result {
+  margin-top: 15px;
+  font-weight: bold;
+  text-align: center;
+  padding: 10px;
+  border-radius: 4px;
+  color: #333;
+}
+
 .truth-text {
-  color: green;
+  color: #4caf50;  /* 绿色 */
   font-weight: bold;
 }
+
 .arbitrary-text {
-  color: red;
+  color: #f44336;  /* 红色 */
   font-weight: bold;
 }
+
 .green-text {
-  color: green;
+  color: #4caf50;
 }
+
 .red-text {
-  color: red;
+  color: #f44336;
+}
+
+.yellow-text {
+  color: #ffc107;  /* 黄色 */
 }
 </style>
